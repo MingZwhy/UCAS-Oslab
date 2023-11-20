@@ -1,0 +1,10 @@
+--- tiny_libc/include/stdint.h	2022-10-15 22:50:09.564565164 +0800
++++ tiny_libc/include/stdint.h	2022-10-15 22:50:09.568565138 +0800
+@@ -61,6 +61,7 @@ typedef uint64_t uintptr_t;
+ typedef uint64_t uintmax_t;
+ 
+ typedef uint64_t ptr_t;
++typedef uint64_t size_t;
+ 
+ #define __INT64_C(c)  c ## L
+ #define __UINT64_C(c) c ## UL

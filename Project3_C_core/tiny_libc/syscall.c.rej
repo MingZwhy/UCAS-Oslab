@@ -1,0 +1,9 @@
+--- tiny_libc/syscall.c	2022-10-15 22:50:09.564565164 +0800
++++ tiny_libc/syscall.c	2022-10-15 22:50:09.568565138 +0800
+@@ -1,5 +1,6 @@
+ #include <syscall.h>
+ #include <stdint.h>
++#include <unistd.h>
+ 
+ static const long IGNORE = 0L;
+ 

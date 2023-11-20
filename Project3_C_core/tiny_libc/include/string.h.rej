@@ -1,0 +1,9 @@
+--- tiny_libc/include/string.h	2022-10-15 22:50:09.564565164 +0800
++++ tiny_libc/include/string.h	2022-10-15 22:50:09.568565138 +0800
+@@ -12,5 +12,6 @@ char *strcpy(char *dest, const char *src
+ char *strncpy(char *dest, const char *src, int n);
+ char *strcat(char *dest, const char *src);
+ int strlen(const char *src);
++void strrev(char *str);
+ 
+ #endif

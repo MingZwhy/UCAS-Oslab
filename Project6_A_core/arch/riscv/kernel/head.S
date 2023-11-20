@@ -1,0 +1,48 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (C) 2012 Regents of the University of California
+ */
+
+#include <asm.h>
+#include <csr.h>
+
+#define KERNEL_STACK		0x50500000
+#define KERNEL_STACK1   0x50520000
+#define PID0_KERNEL_STACK 0xffffffc053601000
+#define PID1_KERNEL_STACK 0xffffffc054601000
+
+ENTRY(_start)
+   
+ /* Mask all interrupts */
+  csrw CSR_SIE, zero
+  csrw CSR_SIP, zero
+  
+  li t0, SR_SUM
+  csrs CSR_SSTATUS, t0
+
+  csrr t0, CSR_MHARTID
+  bnez t0, second_core
+
+  /* TODO: [p1-task2] clear BSS for flat non-ELF images */
+  la s2,__bss_start
+  la s3,__BSS_END__
+  li s4,0  
+
+T0:
+  sw s4,0(s2)
+  addi s2,s2,4
+  bne s2,s3,T0
+
+ /* TODO: [p1-task2] setup C environment */
+  li sp, PID0_KERNEL_STACK
+  call main
+
+second_core:
+  li sp, PID1_KERNEL_STACK
+  call main
+
+loop:
+  //wfi
+  j loop
+
+END(_start)

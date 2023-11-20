@@ -1,0 +1,9 @@
+--- arch/riscv/include/csr.h	2022-10-15 22:50:09.560565190 +0800
++++ arch/riscv/include/csr.h	2022-10-15 22:50:09.564565164 +0800
+@@ -76,4 +76,6 @@
+ #define CSR_TIMEH   0xc81
+ #define CSR_INSTRETH    0xc82
+ 
++#define CSR_MHARTID 0xf14
++
+ #endif /* CSR_H */

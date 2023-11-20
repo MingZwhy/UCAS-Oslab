@@ -1,0 +1,56 @@
+
+build/bootblock:     file format elf64-littleriscv
+
+
+Disassembly of section .text:
+
+0000000050200000 <_ftext>:
+    50200000:	0ff0000f          	fence
+    50200004:	e935                	bnez	a0,50200078 <secondary>
+    50200006:	00000597          	auipc	a1,0x0
+    5020000a:	09058593          	addi	a1,a1,144 # 50200096 <__DATA_BEGIN__>
+    5020000e:	4525                	li	a0,9
+    50200010:	fff50097          	auipc	ra,0xfff50
+    50200014:	ff0080e7          	jalr	-16(ra) # 50150000 <bios_func_entry>
+    50200018:	452d                	li	a0,11
+    5020001a:	502025b7          	lui	a1,0x50202
+    5020001e:	50200337          	lui	t1,0x50200
+    50200022:	1fc3031b          	addiw	t1,t1,508
+    50200026:	04000613          	li	a2,64
+    5020002a:	4685                	li	a3,1
+    5020002c:	fff50097          	auipc	ra,0xfff50
+    50200030:	fd4080e7          	jalr	-44(ra) # 50150000 <bios_func_entry>
+    50200034:	452d                	li	a0,11
+    50200036:	5020a5b7          	lui	a1,0x5020a
+    5020003a:	50200337          	lui	t1,0x50200
+    5020003e:	1fc3031b          	addiw	t1,t1,508
+    50200042:	00031603          	lh	a2,0(t1) # 50200000 <_ftext>
+    50200046:	fc060613          	addi	a2,a2,-64
+    5020004a:	04100693          	li	a3,65
+    5020004e:	fff50097          	auipc	ra,0xfff50
+    50200052:	fb2080e7          	jalr	-78(ra) # 50150000 <bios_func_entry>
+    50200056:	452d                	li	a0,11
+    50200058:	540005b7          	lui	a1,0x54000
+    5020005c:	50200337          	lui	t1,0x50200
+    50200060:	1f43031b          	addiw	t1,t1,500
+    50200064:	00431603          	lh	a2,4(t1) # 50200004 <_ftext+0x4>
+    50200068:	00231683          	lh	a3,2(t1)
+    5020006c:	fff50097          	auipc	ra,0xfff50
+    50200070:	f94080e7          	jalr	-108(ra) # 50150000 <bios_func_entry>
+    50200074:	78d0106f          	j	50202000 <kernel>
+
+0000000050200078 <secondary>:
+    50200078:	4289                	li	t0,2
+    5020007a:	1002b073          	csrc	sstatus,t0
+    5020007e:	502022b7          	lui	t0,0x50202
+    50200082:	10529073          	csrw	stvec,t0
+    50200086:	4289                	li	t0,2
+    50200088:	1042a073          	csrs	sie,t0
+    5020008c:	1002a073          	csrs	sstatus,t0
+
+0000000050200090 <wait_for_wakeup>:
+    50200090:	a001                	j	50200090 <wait_for_wakeup>
+
+0000000050200092 <stop>:
+    50200092:	a001                	j	50200092 <stop>
+    50200094:	0001                	nop

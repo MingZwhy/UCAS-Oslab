@@ -1,0 +1,47 @@
+
+build/bootblock:     file format elf64-littleriscv
+
+
+Disassembly of section .text:
+
+0000000050200000 <_ftext>:
+    50200000:	0ff0000f          	fence
+    50200004:	e921                	bnez	a0,50200054 <secondary>
+    50200006:	4525                	li	a0,9
+    50200008:	00000597          	auipc	a1,0x0
+    5020000c:	06a58593          	addi	a1,a1,106 # 50200072 <__DATA_BEGIN__>
+    50200010:	fff50097          	auipc	ra,0xfff50
+    50200014:	ff0080e7          	jalr	-16(ra) # 50150000 <bios_func_entry>
+    50200018:	50200e37          	lui	t3,0x50200
+    5020001c:	1fce0e1b          	addiw	t3,t3,508
+    50200020:	452d                	li	a0,11
+    50200022:	502025b7          	lui	a1,0x50202
+    50200026:	000e1603          	lh	a2,0(t3) # 50200000 <_ftext>
+    5020002a:	4685                	li	a3,1
+    5020002c:	fff50097          	auipc	ra,0xfff50
+    50200030:	fd4080e7          	jalr	-44(ra) # 50150000 <bios_func_entry>
+    50200034:	452d                	li	a0,11
+    50200036:	51a005b7          	lui	a1,0x51a00
+    5020003a:	50200337          	lui	t1,0x50200
+    5020003e:	1f83031b          	addiw	t1,t1,504
+    50200042:	4605                	li	a2,1
+    50200044:	00031683          	lh	a3,0(t1) # 50200000 <_ftext>
+    50200048:	fff50097          	auipc	ra,0xfff50
+    5020004c:	fb8080e7          	jalr	-72(ra) # 50150000 <bios_func_entry>
+    50200050:	7b10106f          	j	50202000 <kernel>
+
+0000000050200054 <secondary>:
+    50200054:	502022b7          	lui	t0,0x50202
+    50200058:	10529073          	csrw	stvec,t0
+    5020005c:	4309                	li	t1,2
+    5020005e:	10033073          	csrc	sstatus,t1
+    50200062:	4289                	li	t0,2
+    50200064:	1042a073          	csrs	sie,t0
+    50200068:	1002a073          	csrs	sstatus,t0
+
+000000005020006c <loop>:
+    5020006c:	a001                	j	5020006c <loop>
+
+000000005020006e <stop>:
+    5020006e:	a001                	j	5020006e <stop>
+    50200070:	0001                	nop

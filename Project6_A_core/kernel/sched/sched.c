@@ -1,0 +1,710 @@
+#include <os/list.h>
+#include <os/lock.h>
+#include <os/sched.h>
+#include <os/time.h>
+#include <os/task.h>
+#include <os/mm.h>
+#include <screen.h>
+#include <printk.h>
+#include <assert.h>
+#include <pgtable.h>
+#include <csr.h>
+#include <os/kernel.h>
+#include <e1000.h>
+extern rx_head;
+extern rx_tail; 
+
+#define TCB_NUM 2
+pcb_t pcb[NUM_MAX_TASK];
+pcb_t tcb[TCB_NUM];
+pid_t pid_top = 1;
+int if_first_do_sche = 1;
+#define SR_SIE 0x00000002 /* Previous Supervisor IE */
+#define SR_SPIE 0x00000020
+#define SR_SUM 0x00040000
+extern void
+ret_from_exception();
+
+const ptr_t pid0_stack = INIT_KERNEL_STACK_1 + PAGE_SIZE;
+pcb_t pid0_pcb = {
+    .pid = 0,
+    .kernel_sp = (ptr_t)pid0_stack,
+    .user_sp = (ptr_t)pid0_stack,
+    .pgdir = MAIN_DIR,
+    .mask = 1};
+
+const ptr_t pid1_stack = INIT_KERNEL_STACK_1 + 2 * PAGE_SIZE;
+pcb_t pid1_pcb = {
+    .pid = 0,
+    .kernel_sp = (ptr_t)pid1_stack,
+    .user_sp = (ptr_t)pid1_stack,
+    .pgdir = MAIN_DIR,
+    .mask = 2};
+
+LIST_HEAD(ready_queue);
+LIST_HEAD(sleep_queue);
+LIST_HEAD(send_queue);
+LIST_HEAD(recv_queue);
+
+/* current running task PCB */
+pcb_t *volatile current_running;
+pcb_t *volatile current_running0;
+pcb_t *volatile current_running1;
+
+/* global process id */
+pid_t process_id = 1;
+
+typedef struct argv_addrs
+{
+    uint64_t argv_addr[6];
+} argv_addrs, *ptr_to_argv_addrs;
+
+void do_scheduler(void)
+{
+    uint64_t ipi = get_current_cpu_id();
+    if (ipi == 0)
+        current_running = current_running0;
+    else
+        current_running = current_running1;
+    // TODO: [p2-task3] Check sleep queue to wake up PCBs
+    check_sleeping();
+
+    // TODO: [p5-task3] Check send/recv queue to unblock PCBs
+
+
+    // TODO: [p2-task1] Modify the current_running pointer.
+    if (current_running->status == TASK_RUNNING)
+        current_running->status = TASK_READY;
+    pcb_t *last_running = current_running;
+    pcb_t *next_running;
+    list_node_t *tmp_running;
+    tmp_running = make_node_away(&ready_queue, ipi + 1);
+
+    if (tmp_running != NULL)
+    {
+        next_running = (pcb_t *)((char *)(tmp_running)-0x10);
+        if (next_running->status == TASK_EXITED)
+        {
+            do_scheduler();
+            return;
+        }
+        if ((current_running == &pid0_pcb || current_running == &pid1_pcb))
+        {
+            set_timer(get_ticks() + 15000);
+        }
+
+        // not allow pid0 or pid1 enter the ready queue
+        if ((current_running != &pid0_pcb && current_running != &pid1_pcb) && current_running->status == TASK_READY)
+            en_queue(&ready_queue, &last_running->list);
+        // TODO: [p2-task1] switch_to current_running
+    }
+    else
+    {
+        if (current_running == current_running0 && current_running1 == &pid1_pcb && current_running != &pid0_pcb)
+        {
+            next_running = &pid0_pcb;
+            en_queue(&ready_queue, &last_running->list);
+        }
+        else if (current_running == current_running1 && current_running0 == &pid0_pcb && current_running != &pid1_pcb)
+        {
+            next_running = &pid1_pcb;
+            en_queue(&ready_queue, &last_running->list);
+        }
+        else if (/*current_running != &pid0_pcb && current_running != &pid1_pcb &&*/ current_running->status == TASK_READY)
+        {
+            next_running = current_running;
+        }
+        else
+        {
+            if (ipi == 0)
+                next_running = &pid0_pcb;
+            else
+                next_running = &pid1_pcb;
+        }
+        // if ((current_running != &pid0_pcb && current_running != &pid1_pcb) && current_running->status == TASK_READY)
+        //     en_queue(&ready_queue, &last_running->list);
+    }
+
+    next_running->status = TASK_RUNNING;
+    current_running = next_running;
+    if (ipi == 0)
+        current_running0 = next_running;
+    else
+        current_running1 = next_running;
+
+    next_running->core = ipi;
+    // printl("next running is %x\n",next_running);
+    set_satp(SATP_MODE_SV39, (unsigned)(next_running->pid), (kva2pa(next_running->pgdir) >> NORMAL_PAGE_SHIFT));
+    local_flush_tlb_all();
+    switch_to(last_running, next_running);
+}
+
+void do_sleep(uint32_t sleep_time)
+{
+    // TODO: [p2-task3] sleep(seconds)
+    // NOTE: you can assume: 1 second = 1 `timebase`
+    // 1. block the current_runningticks
+    // 2. set the wake up time for the blocked task
+    // 3. reschedule because the current_running is blocked.
+    current_running->status = TASK_BLOCKED;
+    current_running->wakeup_time = get_timer() + sleep_time;
+    en_queue(&sleep_queue, &current_running->list);
+
+    do_scheduler();
+}
+
+void do_block(list_head *queue, list_node_t *pcb_node)
+{
+    // TODO: [p2-task2] block the pcb task into the block queue
+    pcb_t *tmp = (pcb_t *)((char *)(pcb_node)-0x10);
+    tmp->status = TASK_BLOCKED;
+    en_queue(queue, pcb_node);
+
+    do_scheduler();
+}
+
+void do_unblock(list_head *queue)
+{
+    // TODO: [p2-task2] unblock the `pcb` from the block queue
+    list_node_t *node_tmp = de_queue(queue);
+    if (node_tmp == NULL)
+        return;
+    pcb_t *pcb_tmp = (pcb_t *)((char *)node_tmp - 0x10);
+    pcb_tmp->status = TASK_READY;
+    en_queue(&ready_queue, node_tmp);
+}
+void do_all_unblock(list_head *queue)
+{
+    while (!isempyt_queue(queue))
+    {
+        do_unblock(queue);
+    }
+    return;
+}
+
+// function about queue
+void init_ready_queue(list_head *head, int tasknum)
+{
+    for (int i = 0; i < tasknum; i++)
+    {
+        en_queue(head, &pcb[i].list);
+    }
+}
+list_node_t *de_queue(list_head *head)
+{
+    if (head == NULL)
+        assert(0);
+    list_node_t *pre = head->prev;
+    list_node_t *next = head->next;
+    if (pre == head && next == head)
+        return NULL;
+    list_node_t *tmp = next->next;
+    if (tmp == NULL)
+    {
+    }
+    head->next = tmp;
+    tmp->prev = head;
+    return next;
+}
+void en_queue(list_head *head, list_node_t *p)
+{
+    list_node_t *first = head->next;
+    list_node_t *last = head->prev;
+    if (first == head && last == head)
+    {
+        head->prev = p;
+        head->next = p;
+        p->prev = head;
+        p->next = head;
+        return;
+    }
+    else
+    {
+        head->prev = p;
+        p->next = head;
+        p->prev = last;
+        last->next = p;
+    }
+    // list_node_t *pre = head->prev;
+    // head->prev = p;
+    // p->next = head;
+    // pre->next = p;
+    // p->prev = pre;
+    // printl("addr is %x\n",pre);
+    return;
+}
+
+int isempyt_queue(list_head *head)
+{
+    if (head->next == head && head->prev == head)
+        return 1;
+    return 0;
+}
+//这是原来的想法，通过寻找查看是否存在相应的mask进程，如果有则出队进队，但是会导致忙等
+int seek_mask_queue(list_head *head, int mask)
+{
+    list_node_t *set = head;
+    list_node_t *go = head;
+    while (1)
+    {
+        go = go->next;
+        if (go == set)
+            return 0;
+        pcb_t *tmp = (pcb_t *)((char *)(go)-0x10);
+        if ((tmp->mask == 3 || tmp->mask == mask) && tmp->status == TASK_READY)
+            return 1;
+    }
+}
+//这是现在的想法，通过寻找查找相应的mask进程，然后令其直接出来，返回一个结点
+list_node_t *make_node_away(list_head *head, int mask)
+{
+    list_node_t *set = head;
+    list_node_t *go = head;
+    while (1)
+    {
+        go = go->next;
+        if (go == set)
+            return NULL;
+        pcb_t *tmp = (pcb_t *)((char *)(go)-0x10);
+        //清除ready队列中的exit任务
+        if (tmp->status == TASK_EXITED)
+        {
+            list_node_t *next = go->next;
+            list_node_t *prev = go->prev;
+            prev->next = next;
+            next->prev = prev;
+            return make_node_away(set, mask);
+        }
+        if ((tmp->mask == 3 || tmp->mask == mask)) //&& tmp->status == TASK_READY)
+        {
+            list_node_t *next = go->next;
+            list_node_t *prev = go->prev;
+            prev->next = next;
+            next->prev = prev;
+
+            return go;
+        }
+    }
+}
+//
+void do_process_show()
+{
+    printk("[Process Table]\n");
+    for (int i = 0; i < NUM_MAX_TASK; i++)
+    {
+        char *s;
+        switch (pcb[i].status)
+        {
+        case 0:
+            s = "TASK_BLOCKED";
+            break;
+        case 1:
+            s = "TASK_RUNNING";
+            break;
+        case 2:
+            s = "TASK_READY";
+            break;
+        case 3:
+            s = "TASK_EXITED";
+            continue;
+            break;
+        case 4:
+            s = "TASK_EMPTY";
+            continue;
+            break;
+        default:
+            continue;
+            break;
+        }
+        if (pcb[i].status == 1)
+            printk("[%d] PID : %d  STATUS : %s  MASK : %d  USERBASE : %x  CORE : %d\n", i, pcb[i].pid, s, pcb[i].mask, pcb[i].user_stack_base, pcb[i].core);
+        else
+            printk("[%d] PID : %d  STATUS : %s  MASK : %d  USERBASE : %x\n", i, pcb[i].pid, s, pcb[i].mask, pcb[i].user_stack_base);
+    }
+    //printk("%x      %x       %x\n", &ready_queue, ready_queue.next, ready_queue.next->next);
+    printk("used ppage: %d last ppage: %d\n",used_ppage,PPAGE_NUM-used_ppage);
+    int _head = e1000_read_reg(e1000, E1000_RDH);
+    int _tail = e1000_read_reg(e1000, E1000_RDT);
+    printk("head ptr is %d,tail ptr is %d\n",_head,_tail);
+}
+int alloc_pcb()
+{
+    for (int i = 0; i < NUM_MAX_TASK; i++)
+    {
+        if (pcb[i].status == TASK_EXITED)
+        {
+
+            uint8_t *dst = (uint8_t *)(&pcb[i]);
+            uint32_t len = sizeof(pcb_t);
+            for (; len != 0; len--)
+            {
+                *dst++ = 0;
+            }
+            pcb[i].status = TASK_EMPTY;
+        }
+    }
+    for (int i = 0; i < NUM_MAX_TASK; i++)
+    {
+        if (pcb[i].status == TASK_EMPTY)
+            return i;
+    }
+    assert(0);
+    return -1;
+}
+
+static void init_kernel_stack(
+    ptr_t kernel_stack, ptr_t argv_base, ptr_t entry_point,
+    pcb_t *pcb, int argc)
+{
+    regs_context_t *pt_regs =
+        (regs_context_t *)(kernel_stack - sizeof(regs_context_t));
+    for (int i = 0; i < 32; i++)
+        pt_regs->regs[i] = 0;
+
+    pt_regs->regs[10] = argc;
+    pt_regs->regs[11] = (uint64_t)argv_base;
+    pt_regs->regs[4] = pcb;
+    pt_regs->regs[2] = pcb->user_sp;
+    pt_regs->regs[1] = exception_handler_entry;
+    pt_regs->sstatus = SR_SPIE | SR_SUM | SR_FS;
+    pt_regs->sepc = entry_point; // entry_point;
+
+    switchto_context_t *pt_switchto =
+        (switchto_context_t *)((ptr_t)pt_regs - sizeof(switchto_context_t));
+    for (int i = 0; i < 14; i++)
+    {
+        pt_switchto->regs[i] = 0;
+    }
+    pt_switchto->regs[0] = &ret_from_exception; // ra寄存器的值
+
+    pcb->kernel_sp = pt_switchto;
+    pt_switchto->regs[1] = pcb->kernel_sp;
+}
+static int seek_task(char *name)
+{
+    int taskidx = -1;
+    for (int i = 0; i < task_num; i++)
+    {
+        if (strcmp(tasks[i].name, name) == 0)
+        {
+            taskidx = i;
+            break;
+        }
+    }
+    if (taskidx == -1)
+    {
+        printl("~~There is no %s in tasks~~", name);
+        return -1;
+    }
+    return taskidx;
+}
+static ptr_t init_user_stack(ptr_t k_user_stack, ptr_t u_user_stack,
+                             pcb_t *pcb, int argc, char **argv)
+{
+    ptr_t k_user_sp = k_user_stack;
+    ptr_t u_user_sp = u_user_stack;
+    k_user_sp -= sizeof(argv_addrs);
+    u_user_sp -= sizeof(argv_addrs);
+    argv_addrs *ptr_Addrs = (ptr_to_argv_addrs)(k_user_sp);
+    ptr_t argv_base = u_user_sp;
+    for (int i = 0; i < argc; i++)
+    {
+        int len = strlen(argv[i]);
+        k_user_sp -= (sizeof(char) * (len + 1));
+        u_user_sp -= (sizeof(char) * (len + 1));
+        char *s = (char *)(k_user_sp);
+        strcpy(s, argv[i]);
+        ptr_Addrs->argv_addr[i] = (ptr_t)u_user_sp;
+    }
+    int align_num = (k_user_stack - k_user_sp) / 16;
+    pcb->user_sp = u_user_stack - (align_num + 1) * 16;
+    return argv_base;
+}
+pid_t do_exec(char *name, int argc, char *argv[])
+{
+    // 1.先进行taskname的索引判断
+    int taskidx = seek_task(name);
+    assert(taskidx != -1);
+    int mask = current_running->mask;
+    char **real_argv;
+    int real_argc = argc - 1;
+    if (strcmp(argv[0], "1") == 0)
+    {
+        mask = 1;
+        real_argv = argv + 1;
+    }
+    else if (strcmp(argv[0], "2") == 0)
+    {
+        mask = 2;
+        real_argv = argv + 1;
+    }
+    else if (strcmp(argv[0], "3") == 0)
+    {
+        mask = 3;
+        real_argv = argv + 1;
+    }
+    else
+    {
+        real_argc += 1;
+        real_argv = argv;
+    }
+    char *k_argv[100];
+    char buff[100];
+    int loc = 0;
+    for (int i = 0; i < real_argc; i++)
+    {
+        k_argv[i] = &buff[loc];
+        uint8_t *src = (uint8_t *)real_argv[i];
+        for (;; loc++)
+        {
+            buff[loc] = *src++;
+            if (buff[loc] == 0)
+            {
+                loc++;
+                break;
+            }
+        }
+    }
+    // 2.name无误后，为其分配pcb和pid
+    pid_t pid = alloc_pcb();
+    if (pid < 0)
+        return -1;
+    pcb_t *pcb_tmp = &pcb[pid];
+    int numpage = 1;
+    pcb_tmp->pgdir = allocFixedPage(numpage,0);
+    share_pgtable(pcb_tmp->pgdir, MAIN_DIR);
+
+    // 3.分配内核栈和用户栈
+    uintptr_t k_vaddress = alloc_page_helper(USER_SP, pcb_tmp->pgdir,0,0);
+    ptr_t kernel_sp = allocFixedPage(numpage, pcb_tmp->pgdir);
+    ptr_t user_sp = USER_SP;
+    pcb_tmp->kernel_stack_base = kernel_sp;
+    pcb_tmp->user_stack_base = user_sp;
+
+    uint64_t address = load_task_img(taskidx, pid);
+    // 4.用户栈初始化
+    ptr_t argv_base = init_user_stack(k_vaddress + numpage * PAGE_SIZE, user_sp + numpage * PAGE_SIZE, pcb_tmp, real_argc, k_argv);
+
+    // 5.内核栈初始化
+    init_kernel_stack(kernel_sp + numpage * PAGE_SIZE, argv_base, tasks[taskidx].vaddr, pcb_tmp, argc);
+
+    // 6.PCB赋值完成
+    pcb_tmp->pid = pid;
+    pcb_tmp->wakeup_time = 0;
+    pcb_tmp->status = TASK_READY;
+    pcb_tmp->cursor_x = 0;
+    pcb_tmp->cursor_y = 0;
+    pcb_tmp->wait_list.next = &(pcb_tmp->wait_list);
+    pcb_tmp->wait_list.prev = &(pcb_tmp->wait_list);
+    for (int j = 0; j < 16; j++)
+    {
+        pcb_tmp->lock[j] = 0;
+    }
+    // MASK设计
+    pcb_tmp->mask = mask;
+    // 7.入队,结束！
+    en_queue(&ready_queue, &pcb_tmp->list);
+    return pcb_tmp->pid;
+}
+
+void do_exit(void)
+{
+    current_running->status = TASK_EXITED;
+    do_all_unblock(&current_running->wait_list);
+    freePage(current_running->pgdir);
+    //freeQueue();
+    do_scheduler();
+}
+
+int do_kill(pid_t pid)
+{
+    for (int i = 0; i < NUM_MAX_TASK; i++)
+    {
+        if (pcb[i].pid == pid)
+        {
+            pcb[i].status = TASK_EXITED;
+            do_all_unblock(&pcb[i].wait_list);
+
+            for (int j = 0; j < 16; j++)
+            {
+                if (pcb[i].lock[j] != 0)
+                {
+                    kill_lock_release(pcb[i].lock[j]);
+                    pcb[i].lock[j] = 0;
+                }
+            }
+            freePage(pcb[i].pgdir);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int do_waitpid(pid_t pid)
+{
+    for (int i = 0; i < NUM_MAX_TASK; i++)
+    {
+        if (pcb[i].pid == pid && pcb[i].status != TASK_EXITED)
+        {
+            do_block(&pcb[i].wait_list, &current_running->list);
+            return pid;
+        }
+    }
+    return 0;
+}
+
+pid_t do_getpid(void)
+{
+    return current_running->pid;
+}
+
+void do_taskset(int mask, int pid)
+{
+    pcb[pid].mask = mask;
+    return;
+}
+
+void do_pagefault(uint64_t address)
+{
+    if(address>>16 >=0x73 && address>>16 <=0x75)
+    {
+        ptr_t pgdir = current_running->pgdir;
+        uint64_t pa0 = get_page_addr(address);
+        uint64_t kva0 = pa2kva(pa0);
+        clear_pagevalid(address,pgdir);
+        uint64_t kva1 = alloc_page_helper(address,pgdir,0,0);
+        memcpy(kva1,kva0,4096);
+        return;
+    }
+    uint64_t round_address = (address >> 12) << 12;
+    int num;
+    for (num = 0; num < SDPAGE_NUM; num++)
+    {
+        if (1 == sdpage_array[num].valid && round_address == sdpage_array[num].user_address && sdpage_array[num].pgdir == current_running->pgdir)
+        {
+            ptr_t k_address = alloc_page_helper(round_address, current_running->pgdir,0,1);
+            if ((k_address & 0xfff) != 0)
+                assert(0);
+            bios_sdread(kva2pa(k_address), 8, sdpage_array[num].block_id);
+            sdpage_array[num].valid = 0;
+            used_sdpage --;
+            return;
+        }
+    }
+    alloc_page_helper(address, current_running->pgdir,0,1);
+    return;
+}
+
+static void init_kernel_stack_for_thread(
+    ptr_t kernel_stack, ptr_t argv_base, ptr_t entry_point,
+    pcb_t *pcb, int argc)
+{
+    regs_context_t *pt_regs =
+        (regs_context_t *)(kernel_stack - sizeof(regs_context_t));
+    for (int i = 0; i < 32; i++)
+        pt_regs->regs[i] = 0;
+
+    pt_regs->regs[10] = (uint64_t)argv_base;
+    pt_regs->regs[11] = (uint64_t)argv_base;
+    pt_regs->regs[4] = pcb;
+    pt_regs->regs[2] = pcb->user_sp;
+    pt_regs->regs[1] = exception_handler_entry;
+    pt_regs->sstatus = SR_SPIE | SR_SUM | SR_FS;
+    pt_regs->sepc = entry_point; // entry_point;
+
+    switchto_context_t *pt_switchto =
+        (switchto_context_t *)((ptr_t)pt_regs - sizeof(switchto_context_t));
+    for (int i = 0; i < 14; i++)
+    {
+        pt_switchto->regs[i] = 0;
+    }
+    pt_switchto->regs[0] = &ret_from_exception; // ra寄存器的值
+
+    pcb->kernel_sp = pt_switchto;
+    pt_switchto->regs[1] = pcb->kernel_sp;
+}
+
+void thread_create(pid_t *thread, ptr_t func, uint64_t argv)
+{
+    // 1.先分配pcb和对应pid
+    pid_t pid = alloc_pcb();
+    *thread = pid;
+    if (pid < 0)
+        assert(0);
+    pcb_t *pcb_tmp = &pcb[pid];
+
+    // 2.页目录直接延续父亲的页目录
+    int numpage = 1;
+    pcb_tmp->pgdir = current_running->pgdir;
+    uint64_t address = func;
+    int real_argc = 1;
+
+    //将字符串从用户态复制到内核态
+    char *real_argv[6];
+    char buff[100];
+    int loc = 0;
+    real_argv[0] = &buff[loc];
+    uint8_t *src = (uint8_t *)((char **)argv)[0];
+    for (;; loc++)
+    {
+        buff[loc] = *src++;
+        if (buff[loc] == 0)
+        {
+            loc++;
+            break;
+        }
+    }
+
+    // 3.分配内核栈和用户栈
+    uintptr_t k_vaddress = alloc_page_helper(USER_SP2, pcb_tmp->pgdir,0,0);
+    ptr_t kernel_sp = allocFixedPage(numpage,pcb_tmp->pgdir);
+    ptr_t user_sp = USER_SP2;
+    pcb_tmp->kernel_stack_base = kernel_sp;
+    pcb_tmp->user_stack_base = user_sp;
+
+    // 4.用户栈初始化
+    ptr_t argv_base = init_user_stack(k_vaddress + numpage * PAGE_SIZE, user_sp + numpage * PAGE_SIZE, pcb_tmp, real_argc, real_argv);
+    ptr_t argv_base_for_thread = (ptr_t)(((char **)argv_base)[0][0]);
+    // 5.内核栈初始化
+    init_kernel_stack_for_thread(kernel_sp + numpage * PAGE_SIZE, argv_base_for_thread, address, pcb_tmp, real_argc);
+
+    // 6.PCB赋值完成
+    pcb_tmp->pid = pid;
+    pcb_tmp->wakeup_time = 0;
+    pcb_tmp->status = TASK_READY;
+    pcb_tmp->cursor_x = 0;
+    pcb_tmp->cursor_y = 0;
+    pcb_tmp->wait_list.next = &(pcb_tmp->wait_list);
+    pcb_tmp->wait_list.prev = &(pcb_tmp->wait_list);
+    for (int j = 0; j < 16; j++)
+    {
+        pcb_tmp->lock[j] = 0;
+    }
+    // MASK设计
+    pcb_tmp->mask = current_running->mask;
+    // 7.入队,结束！
+    en_queue(&ready_queue, &pcb_tmp->list);
+    return;
+}
+
+void check_net_send()
+{
+    if(check_send_valid())
+    {
+        do_unblock(&send_queue);
+    }
+}
+
+void check_net_recv()
+{
+    if(check_recv_valid())
+    {
+        do_unblock(&recv_queue);
+    }
+}
+static void freeQueue()
+{
+    // tx_head = e1000_read_reg(e1000, E1000_TDH);
+    // tx_tail = e1000_read_reg(e1000, E1000_TDT);
+    // if(tx_head != tx_tail)
+}
